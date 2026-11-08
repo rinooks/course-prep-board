@@ -1,0 +1,700 @@
+rules_version = '2';
+
+// 강의 준비 보드 보안 규칙.
+// 브라우저가 Firestore에 직접 쓰므로, 이 규칙이 곧 서버 검증이다.
+// 길이 제한 limit*() 값은 lib/domain/validation.ts의 LIMITS와 같아야 한다 (단위 테스트가 검사).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- 길이 제한 (LIMITS와 같은 값) ----------
+    function limitEmail() { return 254; }
+    function limitDisplayName() { return 100; }
+    function limitPhotoURL() { return 2048; }
+    function limitCourseTitle() { return 100; }
+    function limitCourseClient() { return 100; }
+    function limitCourseDescription() { return 2000; }
+    function limitInstructors() { return 20; }
+    function limitCardTitle() { return 200; }
+    function limitCardMemo() { return 5000; }
+    function limitChecklistText() { return 300; }
+    function limitSessionLocation() { return 200; }
+    function limitSessionAudience() { return 200; }
+    function limitSessionNote() { return 1000; }
+    function limitMaterialTitle() { return 200; }
+    function limitMaterialBody() { return 100000; }
+    function limitMaterialUrl() { return 2048; }
+    function limitMaterialMemo() { return 2000; }
+    function limitDraftContent() { return 100000; }
+    function limitDraftRequest() { return 2000; }
+    function limitDraftMaterials() { return 50; }
+    function limitOutputUrl() { return 2048; }
+    function limitEventTitle() { return 200; }
+    function limitEventNote() { return 1000; }
+    function limitFeeAmount() { return 1000000000; }
+    function limitFeeLabel() { return 100; }
+    function limitFeeMemo() { return 1000; }
+    function limitClientName() { return 100; }
+    function limitClientMemo() { return 2000; }
+    function limitContactName() { return 100; }
+    function limitContactRole() { return 100; }
+    function limitContactPhone() { return 30; }
+    function limitContactMemo() { return 1000; }
+    // 카드 첨부 파일: 이름은 글자 수, 크기는 바이트(100MB). 크기는 storage.rules와도 같아야 한다
+    function limitCardFileName() { return 200; }
+    function limitCardFileBytes() { return 104857600; }
+
+    // ---------- 사람 ----------
+    function bootstrapEmail() { return 'owner@example.com'; }
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true;
+    }
+
+    function myEmail() { return request.auth.token.email.lower(); }
+
+    function memberPath(email) {
+      return /databases/$(database)/documents/members/$(email);
+    }
+
+    function isBootstrap() { return signedIn() && myEmail() == bootstrapEmail(); }
+
+    // 초대된 팀원 (첫 관리자는 문서가 생기기 전에도 팀원으로 본다)
+    function isMember() {
+      return signedIn() && (isBootstrap() || exists(memberPath(myEmail())));
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        isBootstrap()
+        || (exists(memberPath(myEmail())) && get(memberPath(myEmail())).data.role == 'admin')
+      );
+    }
+
+    // ---------- 값 모양 ----------
+    function isText(value, min, max) {
+      return value is string && value.size() >= min && value.size() <= max;
+    }
+
+    function isEmailValue(value) {
+      return value is string
+        && value.size() <= limitEmail()
+        && value == value.lower()
+        && value.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$');
+    }
+
+    function isNullableEmail(value) { return value == null || isEmailValue(value); }
+
+    function isDateValue(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$')
+        && isRealDay(int(value[0:4]), int(value[5:7]), int(value[8:10]));
+    }
+
+    // 달력에 실제로 있는 날인지 (2월 30일, 4월 31일 같은 날은 막는다. 윤년 2월 29일은 통과)
+    function isRealDay(year, month, day) {
+      return day <= 28
+        || (month != 2 && day <= 30)
+        || (month in [1, 3, 5, 7, 8, 10, 12] && day <= 31)
+        || (month == 2 && day == 29 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    }
+
+    function isNullableDate(value) { return value == null || isDateValue(value); }
+
+    function isNullableTime(value) {
+      return value == null || (value is string && value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$'));
+    }
+
+    function isStage(value) {
+      return value in ['request', 'curriculum', 'lecture', 'practice', 'rehearsal', 'dayof', 'survey'];
+    }
+
+    function isRole(value) { return value in ['admin', 'instructor']; }
+
+    function data() { return request.resource.data; }
+
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // 만들 때: 만든 사람·시각은 본인·지금이어야 한다
+    function stampedOnCreate() {
+      return data().createdBy == myEmail()
+        && data().createdAt == request.time
+        && data().updatedAt == request.time
+        && data().updatedBy == myEmail();
+    }
+
+    // 고칠 때: 만든 사람·시각은 못 바꾸고, 고친 사람·시각은 본인·지금이어야 한다
+    function stampedOnUpdate() {
+      return !changed().hasAny(['createdBy', 'createdAt'])
+        && data().updatedAt == request.time
+        && data().updatedBy == myEmail();
+    }
+
+    // 휴지통 표시: 건드리지 않으면 통과. 넣을 때는 지금·본인, 되살릴 때는 둘 다 null
+    function validTrashFields() {
+      return !changed().hasAny(['deletedAt', 'deletedBy'])
+        || (data().deletedAt == null && data().deletedBy == null)
+        || (data().deletedAt == request.time && data().deletedBy == myEmail());
+    }
+
+    // 담당 강사 목록: 최대 20개, 원소마다 254자 이하 소문자 이메일 문자열
+    function isEmailAt(emails, i) {
+      return emails.size() <= i
+        || (emails[i] is string
+            && emails[i].size() <= 254
+            && emails[i].matches('^[^@ A-Z]+@[^@ A-Z]+[.][^@ A-Z]+$'));
+    }
+
+    function isInstructorList(emails) {
+      return emails is list
+        && emails.size() <= limitInstructors()
+        && isEmailAt(emails, 0) && isEmailAt(emails, 1) && isEmailAt(emails, 2) && isEmailAt(emails, 3)
+        && isEmailAt(emails, 4) && isEmailAt(emails, 5) && isEmailAt(emails, 6) && isEmailAt(emails, 7)
+        && isEmailAt(emails, 8) && isEmailAt(emails, 9) && isEmailAt(emails, 10) && isEmailAt(emails, 11)
+        && isEmailAt(emails, 12) && isEmailAt(emails, 13) && isEmailAt(emails, 14) && isEmailAt(emails, 15)
+        && isEmailAt(emails, 16) && isEmailAt(emails, 17) && isEmailAt(emails, 18) && isEmailAt(emails, 19);
+    }
+
+    // ---------- members/{email} ----------
+    function memberKeys() {
+      return ['email', 'role', 'displayName', 'photoURL', 'uid', 'invitedBy', 'invitedAt', 'lastLoginAt'];
+    }
+
+    function validProfileFields() {
+      return data().uid == request.auth.uid
+        && isText(data().displayName, 0, limitDisplayName())
+        && isText(data().photoURL, 0, limitPhotoURL())
+        && data().lastLoginAt == request.time;
+    }
+
+    match /members/{email} {
+      // 내 문서는 초대 전에도 읽을 수 있다 (초대 여부를 확인하려고)
+      allow get: if signedIn() && (email == myEmail() || isMember());
+      allow list: if isMember();
+
+      // 첫 관리자가 자기 관리자 문서를 만든다
+      allow create: if isBootstrap()
+        && email == bootstrapEmail()
+        && data().keys().hasOnly(memberKeys())
+        && data().keys().hasAll(memberKeys())
+        && data().email == email
+        && data().role == 'admin'
+        && data().invitedBy == email
+        && data().invitedAt == request.time
+        && validProfileFields();
+
+      // 관리자가 강사를 초대한다
+      allow create: if isAdmin()
+        && data().keys().hasOnly(memberKeys())
+        && data().keys().hasAll(memberKeys())
+        && isEmailValue(email)
+        && data().email == email
+        && isRole(data().role)
+        && data().displayName == ''
+        && data().photoURL == ''
+        && data().uid == null
+        && data().invitedBy == myEmail()
+        && data().invitedAt == request.time
+        && data().lastLoginAt == null;
+
+      // 본인: 로그인할 때 프로필만 갱신
+      allow update: if signedIn()
+        && email == myEmail()
+        && changed().hasOnly(['uid', 'displayName', 'photoURL', 'lastLoginAt'])
+        && validProfileFields();
+
+      // 관리자: 다른 사람의 역할 변경 (첫 관리자는 관리자로 고정)
+      allow update: if isAdmin()
+        && email != myEmail()
+        && changed().hasOnly(['role'])
+        && isRole(data().role)
+        && (email != bootstrapEmail() || data().role == 'admin');
+
+      // 관리자: 다른 사람 내보내기 (첫 관리자는 내보낼 수 없다)
+      allow delete: if isAdmin() && email != myEmail() && email != bootstrapEmail();
+    }
+
+    // ---------- courses/{courseId} ----------
+    function courseKeys() {
+      return ['title', 'client', 'description', 'instructorEmails', 'status',
+              'deletedAt', 'deletedBy', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+    }
+
+    function validCourseFields() {
+      return isText(data().title, 1, limitCourseTitle())
+        && isText(data().client, 0, limitCourseClient())
+        && isText(data().description, 0, limitCourseDescription())
+        && isInstructorList(data().instructorEmails)
+        && data().status in ['active', 'archived'];
+    }
+
+    match /courses/{courseId} {
+      allow read: if isMember();
+
+      allow create: if isMember()
+        && data().keys().hasOnly(courseKeys())
+        && data().keys().hasAll(courseKeys())
+        && validCourseFields()
+        && data().status == 'active'
+        && data().deletedAt == null
+        && data().deletedBy == null
+        && stampedOnCreate();
+
+      // 휴지통 넣기·되살리기는 관리자만. 휴지통에 있는 과정은 관리자만 고친다.
+      allow update: if isMember()
+        && changed().hasOnly(['title', 'client', 'description', 'instructorEmails', 'status',
+                              'deletedAt', 'deletedBy', 'updatedAt', 'updatedBy'])
+        && validCourseFields()
+        && stampedOnUpdate()
+        && validTrashFields()
+        && (!changed().hasAny(['deletedAt', 'deletedBy']) || isAdmin())
+        && (resource.data.deletedAt == null || isAdmin());
+
+      // 완전 삭제는 막는다. 과정 지우기는 휴지통 표시(deletedAt)로만 한다 (PRD: 지우면 휴지통으로).
+      // 30일 뒤 완전 삭제는 나중에 서버 작업(Admin SDK)으로 하며, 그 작업은 이 규칙을 거치지 않는다.
+      allow delete: if false;
+
+      // 하위 문서(카드·체크리스트·회차)를 쓸 수 있는지:
+      // 과정이 실제로 있고(쓰기 결과 기준), 휴지통에 있지 않아야 한다. 휴지통 과정은 관리자만.
+      // getAfter: 과정 만들기처럼 과정과 하위 문서를 한 묶음으로 쓸 때도 "쓴 뒤의 과정"을 본다.
+      function parentCoursePath() {
+        return /databases/$(database)/documents/courses/$(courseId);
+      }
+
+      function courseWritable() {
+        return existsAfter(parentCoursePath())
+          && (getAfter(parentCoursePath()).data.deletedAt == null || isAdmin());
+      }
+
+      // ---------- cards ----------
+      function cardKeys() {
+        return ['stage', 'title', 'order', 'assigneeEmail', 'dueDate', 'memo', 'done',
+                'deletedAt', 'deletedBy', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function validCardFields() {
+        return isStage(data().stage)
+          && isText(data().title, 1, limitCardTitle())
+          && data().order is number
+          && isNullableEmail(data().assigneeEmail)
+          && isNullableDate(data().dueDate)
+          && isText(data().memo, 0, limitCardMemo())
+          && data().done is bool;
+      }
+
+      match /cards/{cardId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(cardKeys())
+          && data().keys().hasAll(cardKeys())
+          && validCardFields()
+          && data().deletedAt == null
+          && data().deletedBy == null
+          && stampedOnCreate();
+
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['stage', 'title', 'order', 'assigneeEmail', 'dueDate', 'memo', 'done',
+                                'deletedAt', 'deletedBy', 'updatedAt', 'updatedBy'])
+          && validCardFields()
+          && validTrashFields()
+          && stampedOnUpdate();
+
+        // 완전 삭제는 막는다. 카드 지우기는 휴지통 표시(deletedAt)로만 한다 (되살릴 수 있고 누가 지웠는지 남는다).
+        allow delete: if false;
+      }
+
+      // ---------- checklistItems ----------
+      function checklistKeys() {
+        return ['cardId', 'text', 'done', 'order', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function validChecklistFields() {
+        return isText(data().cardId, 1, 128)
+          && isText(data().text, 1, limitChecklistText())
+          && data().done is bool
+          && data().order is number;
+      }
+
+      match /checklistItems/{itemId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(checklistKeys())
+          && data().keys().hasAll(checklistKeys())
+          && validChecklistFields()
+          && data().done == false
+          && stampedOnCreate();
+
+        // 체크·글·순서만 바꾼다. 다른 카드로 옮길 수 없다.
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['text', 'done', 'order', 'updatedAt', 'updatedBy'])
+          && validChecklistFields()
+          && stampedOnUpdate();
+
+        allow delete: if isMember() && courseWritable();
+      }
+
+      // ---------- cardFiles (카드 첨부 파일 목록) ----------
+      // 파일 자체는 Storage(storage.rules)에 있고, 여기에는 이름·크기·저장 위치만 둔다.
+      // 만든 뒤에는 고칠 수 없다 (이름을 바꾸려면 지우고 다시 올린다).
+      // 지우기는 휴지통 없이 바로 지운다: 지운 파일이 용량을 계속 차지하지 않게.
+      function cardFileKeys() {
+        return ['cardId', 'name', 'size', 'contentType', 'storagePath',
+                'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      match /cardFiles/{fileId} {
+        allow read: if isMember();
+
+        // 저장 위치는 materials/{내 uid}/{과정}/{카드}/{이 문서 id}/{이름}이어야 한다 (다른 파일을 가리키지 못하게).
+        // 이름에 /가 들어가면 위치가 어긋나므로 막는다. 붙일 카드는 실제로 있어야 한다.
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(cardFileKeys())
+          && data().keys().hasAll(cardFileKeys())
+          && isText(data().cardId, 1, 128)
+          && exists(/databases/$(database)/documents/courses/$(courseId)/cards/$(data().cardId))
+          && isText(data().name, 1, limitCardFileName())
+          && data().name.matches('^[^/]+$')
+          && data().size is int
+          && data().size >= 1
+          && data().size <= limitCardFileBytes()
+          && isText(data().contentType, 1, 100)
+          && data().storagePath == 'materials/' + request.auth.uid + '/' + courseId + '/' + data().cardId
+                                   + '/' + fileId + '/' + data().name
+          && stampedOnCreate();
+
+        allow update: if false;
+
+        allow delete: if isMember() && courseWritable();
+      }
+
+      // ---------- sessions ----------
+      function sessionKeys() {
+        return ['date', 'startTime', 'location', 'audience', 'note',
+                'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function validSessionFields() {
+        return isDateValue(data().date)
+          && isNullableTime(data().startTime)
+          && isText(data().location, 0, limitSessionLocation())
+          && isText(data().audience, 0, limitSessionAudience())
+          && isText(data().note, 0, limitSessionNote());
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(sessionKeys())
+          && data().keys().hasAll(sessionKeys())
+          && validSessionFields()
+          && stampedOnCreate();
+
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['date', 'startTime', 'location', 'audience', 'note', 'updatedAt', 'updatedBy'])
+          && validSessionFields()
+          && stampedOnUpdate();
+
+        allow delete: if isMember() && courseWritable();
+      }
+
+      // 웹 주소: http:// 또는 https://로 시작하고 공백이 없어야 한다 (javascript: 같은 주소를 막는다)
+      function isWebUrl(value) {
+        return value is string && value.matches('^https?://[^\\s]+$');
+      }
+
+      // ---------- materials (재료함, PRD F4) ----------
+      // 파일은 저장하지 않는다. 글(붙여 넣기·받아쓰기)과 링크만 둔다.
+      function materialKeys() {
+        return ['kind', 'title', 'body', 'url', 'stage', 'memo', 'excludeFromAi',
+                'deletedAt', 'deletedBy', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      // 링크는 주소가 있어야 하고 본문(설명)은 비워도 된다. 글 재료는 본문이 있어야 하고 주소가 없어야 한다.
+      function validMaterialFields() {
+        return data().kind in ['text', 'dictation', 'link']
+          && isText(data().title, 1, limitMaterialTitle())
+          && isText(data().url, 0, limitMaterialUrl())
+          && ((data().kind == 'link' && isText(data().body, 0, limitMaterialBody()) && isWebUrl(data().url))
+              || (data().kind != 'link' && isText(data().body, 1, limitMaterialBody()) && data().url == ''))
+          && (data().stage == null || isStage(data().stage))
+          && isText(data().memo, 0, limitMaterialMemo())
+          && data().excludeFromAi is bool;
+      }
+
+      match /materials/{materialId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(materialKeys())
+          && data().keys().hasAll(materialKeys())
+          && validMaterialFields()
+          && data().deletedAt == null
+          && data().deletedBy == null
+          && stampedOnCreate();
+
+        // 종류(kind)는 바꿀 수 없다
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['title', 'body', 'url', 'stage', 'memo', 'excludeFromAi',
+                                'deletedAt', 'deletedBy', 'updatedAt', 'updatedBy'])
+          && validMaterialFields()
+          && validTrashFields()
+          && stampedOnUpdate();
+
+        // 완전 삭제는 막는다. 지우기는 휴지통 표시(deletedAt)로만 한다
+        allow delete: if false;
+      }
+
+      // ---------- drafts (AI 초안, PRD F6) ----------
+      function draftKeys() {
+        return ['kind', 'version', 'content', 'request', 'materialIds',
+                'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function isDraftKindValue(value) { return value in ['curriculum', 'slides', 'lab']; }
+
+      // materialIds는 개수만 검사한다 (재료 id 목록이라 잘못 들어가도 화면에서 무시된다)
+      function validDraftFields() {
+        return isDraftKindValue(data().kind)
+          && data().version is int && data().version >= 1
+          && isText(data().content, 1, limitDraftContent())
+          && isText(data().request, 0, limitDraftRequest())
+          && data().materialIds is list
+          && data().materialIds.size() <= limitDraftMaterials();
+      }
+
+      match /drafts/{draftId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(draftKeys())
+          && data().keys().hasAll(draftKeys())
+          && validDraftFields()
+          && stampedOnCreate();
+
+        // 내용만 고친다
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['content', 'updatedAt', 'updatedBy'])
+          && validDraftFields()
+          && stampedOnUpdate();
+
+        // 종류별 최근 10판만 남기려고 옛 판은 지운다 (확정한 내용은 결과물에 따로 남아 있다)
+        allow delete: if isMember() && courseWritable();
+      }
+
+      // ---------- outputs (결과물, PRD F7) ----------
+      function outputKeys() {
+        return ['kind', 'version', 'content', 'sourceDraftId', 'finalUrl', 'isFinal',
+                'deletedAt', 'deletedBy', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function validOutputFields() {
+        return isDraftKindValue(data().kind)
+          && data().version is int && data().version >= 1
+          && isText(data().content, 1, limitDraftContent())
+          && isText(data().sourceDraftId, 1, 128)
+          && isText(data().finalUrl, 0, limitOutputUrl())
+          && (data().finalUrl == '' || isWebUrl(data().finalUrl))
+          && data().isFinal is bool;
+      }
+
+      match /outputs/{outputId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(outputKeys())
+          && data().keys().hasAll(outputKeys())
+          && validOutputFields()
+          && data().finalUrl == ''
+          && data().isFinal == false
+          && data().deletedAt == null
+          && data().deletedBy == null
+          && stampedOnCreate();
+
+        // 확정한 내용(content)·종류·판 번호는 고칠 수 없다. 최종본 링크·표시와 휴지통만 바꾼다
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['finalUrl', 'isFinal', 'deletedAt', 'deletedBy', 'updatedAt', 'updatedBy'])
+          && validOutputFields()
+          && validTrashFields()
+          && stampedOnUpdate();
+
+        allow delete: if false;
+      }
+
+      // ---------- events (리허설·회의 일정, PRD F8) ----------
+      function eventKeys() {
+        return ['kind', 'title', 'date', 'startTime', 'note',
+                'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+      }
+
+      function validEventFields() {
+        return data().kind in ['rehearsal', 'meeting']
+          && isText(data().title, 1, limitEventTitle())
+          && isDateValue(data().date)
+          && isNullableTime(data().startTime)
+          && isText(data().note, 0, limitEventNote());
+      }
+
+      match /events/{eventId} {
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && courseWritable()
+          && data().keys().hasOnly(eventKeys())
+          && data().keys().hasAll(eventKeys())
+          && validEventFields()
+          && stampedOnCreate();
+
+        allow update: if isMember()
+          && courseWritable()
+          && changed().hasOnly(['kind', 'title', 'date', 'startTime', 'note', 'updatedAt', 'updatedBy'])
+          && validEventFields()
+          && stampedOnUpdate();
+
+        allow delete: if isMember() && courseWritable();
+      }
+    }
+
+    // ---------- fees/{feeId}: 강사료 ----------
+    // 금액은 강사 본인과 관리자만 읽고 쓴다. 강사는 자기 강사료만 만들고, 관리자는 팀원 누구의 것이든 만든다.
+    // 어느 과정·어느 강사의 강사료인지는 만든 뒤 바꿀 수 없다.
+    // 목록을 읽을 때 강사는 쿼리에 instructorEmail == 본인 조건을 넣어야 통과한다.
+    function feeKeys() {
+      return ['courseId', 'instructorEmail', 'label', 'amount', 'dueDate', 'paidDate', 'memo',
+              'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+    }
+
+    function validFeeFields() {
+      return isText(data().courseId, 1, 128)
+        && isEmailValue(data().instructorEmail)
+        && isText(data().label, 0, limitFeeLabel())
+        && data().amount is int
+        && data().amount >= 1
+        && data().amount <= limitFeeAmount()
+        && isDateValue(data().dueDate)
+        && isNullableDate(data().paidDate)
+        && isText(data().memo, 0, limitFeeMemo());
+    }
+
+    function ownsFee(fee) { return fee.instructorEmail == myEmail(); }
+
+    match /fees/{feeId} {
+      allow read: if isMember() && (ownsFee(resource.data) || isAdmin());
+
+      allow create: if isMember()
+        && data().keys().hasOnly(feeKeys())
+        && data().keys().hasAll(feeKeys())
+        && validFeeFields()
+        && stampedOnCreate()
+        && exists(/databases/$(database)/documents/courses/$(data().courseId))
+        && (ownsFee(data()) || (isAdmin() && exists(memberPath(data().instructorEmail))));
+
+      allow update: if isMember()
+        && (ownsFee(resource.data) || isAdmin())
+        && changed().hasOnly(['label', 'amount', 'dueDate', 'paidDate', 'memo', 'updatedAt', 'updatedBy'])
+        && validFeeFields()
+        && stampedOnUpdate();
+
+      allow delete: if isMember() && (ownsFee(resource.data) || isAdmin());
+    }
+
+    // ---------- clients/{clientId}: 고객사 주소록 ----------
+    // 팀원 모두가 보고 고친다. 지우기는 관리자만 (담당자와 한 묶음으로 지운다).
+    function clientKeys() {
+      return ['name', 'memo', 'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+    }
+
+    function validClientFields() {
+      return isText(data().name, 1, limitClientName())
+        && isText(data().memo, 0, limitClientMemo());
+    }
+
+    match /clients/{clientId} {
+      allow read: if isMember();
+
+      allow create: if isMember()
+        && data().keys().hasOnly(clientKeys())
+        && data().keys().hasAll(clientKeys())
+        && validClientFields()
+        && stampedOnCreate();
+
+      allow update: if isMember()
+        && changed().hasOnly(['name', 'memo', 'updatedAt', 'updatedBy'])
+        && validClientFields()
+        && stampedOnUpdate();
+
+      allow delete: if isAdmin();
+    }
+
+    // ---------- clientContacts/{contactId}: 고객사 담당자 ----------
+    // 개인정보라 휴지통 없이 바로 지운다. 어느 고객사의 담당자인지는 바꿀 수 없다.
+    function contactKeys() {
+      return ['clientId', 'name', 'role', 'phone', 'email', 'memo',
+              'createdBy', 'createdAt', 'updatedAt', 'updatedBy'];
+    }
+
+    // 숫자와 + - ( ) . 띄어쓰기만, 숫자가 하나 이상 (비워도 됨)
+    function isPhoneValue(value) {
+      return value is string
+        && value.size() <= limitContactPhone()
+        && value.matches('^[0-9+(). -]*$')
+        && (value.size() == 0 || value.matches('.*[0-9].*'));
+    }
+
+    function validContactFields() {
+      return isText(data().clientId, 1, 128)
+        && isText(data().name, 1, limitContactName())
+        && isText(data().role, 0, limitContactRole())
+        && isPhoneValue(data().phone)
+        && (data().email == '' || isEmailValue(data().email))
+        && isText(data().memo, 0, limitContactMemo());
+    }
+
+    match /clientContacts/{contactId} {
+      allow read: if isMember();
+
+      allow create: if isMember()
+        && data().keys().hasOnly(contactKeys())
+        && data().keys().hasAll(contactKeys())
+        && validContactFields()
+        && stampedOnCreate()
+        && exists(/databases/$(database)/documents/clients/$(data().clientId));
+
+      allow update: if isMember()
+        && changed().hasOnly(['name', 'role', 'phone', 'email', 'memo', 'updatedAt', 'updatedBy'])
+        && validContactFields()
+        && stampedOnUpdate();
+
+      allow delete: if isMember();
+    }
+
+    // ---------- activity/{activityId}: 최근 활동 기록 (PRD F9) ----------
+    // 서버 함수(functions/, Admin SDK)만 쓴다. 화면에서는 초대된 팀원이 읽기만 한다.
+    // 과정 보드는 courseId == 과정 조건으로 최근 5개만 읽는다 (firestore.indexes.json의 색인).
+    match /activity/{activityId} {
+      allow read: if isMember();
+      allow write: if false;
+    }
+
+    // mailLog(메일 보낸 기록)는 서버(Admin SDK)만 쓴다. 아래 "그 밖의 경로"에 걸려 브라우저에서는 막힌다.
+
+    // 그 밖의 모든 경로는 막는다 (규칙은 명시적으로 허용한 것만 통과한다)
+  }
+}

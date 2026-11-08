@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/* design.md 2장 디자인 토큰 (코퍼레이트 네이비). 새 색·모서리 값을 만들지 않는다. */
+@theme {
+  --color-primary: #1e2a5a;
+  --color-primary-foreground: #ffffff;
+  --color-surface: #f8fafc;
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-line: #e2e8f0;
+  --radius-tile: 16px; /* 벤토 타일 (2026-11-08). 화면을 나누는 큰 상자에만 쓴다 */
+  --radius-card: 6px;
+  --radius-button: 6px;
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+
+  /* 상태 색 (design.md 2장에 추가한 토큰). 흰 배경과 옅은 배경(/5, /10) 위에서 명암비 4.5:1 이상 */
+  --color-danger: #b91c1c;
+  --color-success: #047857;
+  --color-warning: #92400e;
+
+  /* 과정 구분 색 6개 (design.md 2장). 캘린더·홈 카드에서 과정을 구분하는 데만 쓴다. 흰 글자와 명암비 5:1 이상.
+     상태 색(빨강·초록·갈색)과 헷갈리지 않는 색만 골랐다. */
+  --color-course-1: #1d4ed8;
+  --color-course-2: #6d28d9;
+  --color-course-3: #be185d;
+  --color-course-4: #155e75;
+  --color-course-5: #4d7c0f;
+  --color-course-6: #475569;
+
+  /* 글자 크기 (design.md 3장, 2026-10-13 한 단계씩 줄임). 클래스 이름은 Tailwind 그대로 쓰고 크기만 한 단계 낮췄다.
+     그래서 이 앱의 text-base는 14px이다. 줄 높이도 한 단계 아래 값을 그대로 가져왔다.
+     text-xs(12px)는 더 줄이면 한글이 읽기 어려워서 그대로 두고, text-sm은 그 사이 13px로 둔다. */
+  --text-xs: 0.75rem; /* 12px */
+  --text-xs--line-height: calc(1 / 0.75);
+  --text-sm: 0.8125rem; /* 13px */
+  --text-sm--line-height: calc(1.125 / 0.8125);
+  --text-base: 0.875rem; /* 14px */
+  --text-base--line-height: calc(1.25 / 0.875);
+  --text-lg: 1rem; /* 16px */
+  --text-lg--line-height: calc(1.5 / 1);
+  --text-xl: 1.125rem; /* 18px */
+  --text-xl--line-height: calc(1.75 / 1.125);
+  --text-2xl: 1.25rem; /* 20px */
+  --text-2xl--line-height: calc(1.75 / 1.25);
+  --text-3xl: 1.5rem; /* 24px */
+  --text-3xl--line-height: calc(2 / 1.5);
+  --text-4xl: 1.875rem; /* 30px */
+  --text-4xl--line-height: calc(2.25 / 1.875);
+
+  /* 팝업 입장: 투명도 0→1 + 8px 위로 이동, 200ms (design.md 5장) */
+  --animate-pop-in: pop-in 200ms ease-out both;
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* next/font가 만든 Noto Sans KR 변수를 기본 글꼴로 연결한다 (app/layout.tsx) */
+@theme inline {
+  --font-sans: var(--font-noto-sans-kr), "Noto Sans KR", sans-serif;
+}
+
+html {
+  color-scheme: light; /* 지금은 밝은 화면만 지원한다 */
+}
+
+/* 아주 넓은 모니터: 글자·여백·최대 폭이 모두 rem 기준이라, 기준 글자 크기만 키워 화면 전체를 비례해서 키운다.
+   이렇게 하지 않으면 3000px대 화면에서 본문이 가운데 3분의 1만 차지하고 글자가 작게 보인다. */
+@media (min-width: 1920px) {
+  html {
+    font-size: 112.5%;
+  }
+}
+
+@media (min-width: 2560px) {
+  html {
+    font-size: 125%;
+  }
+}
+
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* 글자 크기 클래스가 없는 글도 본문 크기(14px)로 */
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  word-break: keep-all; /* 한글을 단어 중간에서 끊지 않고 띄어쓰기 단위로만 줄바꿈 */
+  overflow-wrap: break-word; /* 띄어쓰기 없는 긴 문자열은 칸을 넘칠 때만 끊는다 */
+}
+
+/* 휴대폰: 입력칸 글자가 16px보다 작으면 아이폰 사파리가 칸을 누를 때마다 화면을 확대한다.
+   휴대폰 폭에서만 입력칸 글자를 16px로 둔다. (레이어 밖 규칙이라 text-* 클래스보다 우선한다) */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* 이메일·주소처럼 띄어쓰기 없이 긴 문자열 칸 */
+.break-anywhere {
+  word-break: break-all;
+}

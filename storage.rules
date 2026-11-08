@@ -1,0 +1,113 @@
+rules_version = '2';
+
+// 파일 저장소(Storage) 보안 규칙. 지금은 카드 첨부 파일만 둔다.
+// 새 파일은 materials/{올린 사람 uid}/… 에 올라가고, 서버 함수(functions/)가 교안이면 카드를 리허설 단계로 옮긴다.
+// 파일 목록 정보는 Firestore(courses/{과정}/cardFiles)에 따로 있고, 그쪽 규칙은 firestore.rules에 있다.
+//
+// 팀원인지·과정이 휴지통에 있는지는 Firestore 문서를 직접 읽어 확인한다 (교차 서비스 규칙).
+// 한 번 검사에 Firestore 문서는 2개까지만 읽을 수 있다: 팀원 문서 1개 + 과정 문서 1개.
+// 그래서 휴지통 과정에는 관리자도 파일을 올릴 수 없다 (관리자인지 보려면 문서를 더 읽어야 한다).
+//
+// 크기·형식 제한은 lib/domain/cardFiles.ts와 같아야 한다 (tests/unit/card-files.test.ts가 검사).
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ---------- 제한 (lib/domain/cardFiles.ts와 같은 값) ----------
+    function maxFileBytes() { return 104857600; }
+
+    function maxFileNameLength() { return 200; }
+
+    // CARD_FILE_TYPES의 형식 목록 (확장자 → 형식에서 형식만)
+    function allowedContentTypes() {
+      return [
+        'application/pdf',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/x-hwp',
+        'application/hwp+zip',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/csv',
+        'text/plain',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/heic',
+        'audio/mp4',
+        'audio/mpeg',
+        'audio/wav',
+        'application/zip'
+      ];
+    }
+
+    // ---------- 사람 (firestore.rules와 같은 기준) ----------
+    function bootstrapEmail() { return 'owner@example.com'; }
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true;
+    }
+
+    function myEmail() { return request.auth.token.email.lower(); }
+
+    // 초대된 팀원 (첫 관리자는 팀원 문서가 생기기 전에도 팀원으로 본다)
+    function isMember() {
+      return signedIn() && (
+        myEmail() == bootstrapEmail()
+        || firestore.exists(/databases/(default)/documents/members/$(myEmail()))
+      );
+    }
+
+    // 과정이 있고 휴지통에 있지 않은지.
+    // 과정이 없으면 get()이 오류를 내고, 오류는 "막기"로 처리된다 (exists()를 따로 부르면 읽기 횟수를 하나 더 쓴다).
+    function courseOpen(courseId) {
+      return firestore.get(/databases/(default)/documents/courses/$(courseId)).data.deletedAt == null;
+    }
+
+    function isSafeId(value) { return value.matches('^[A-Za-z0-9_-]{1,128}$'); }
+
+    // 새 파일로 올려도 되는지: 이름 길이·크기·형식, 과정이 진행 중인지
+    function validNewFile(courseId, fileName) {
+      return fileName.size() <= maxFileNameLength()
+        && request.resource.size > 0
+        && request.resource.size <= maxFileBytes()
+        && request.resource.contentType in allowedContentTypes()
+        && courseOpen(courseId);
+    }
+
+    // ---------- 카드 첨부 파일 ----------
+    // 위치: materials/{올린 사람 uid}/{과정}/{카드}/{파일 id}/{파일 이름}
+    // 경로의 uid는 올린 본인이어야 한다. 그래서 서버 함수가 경로의 uid를 "올린 사람"으로 믿을 수 있다.
+    match /materials/{uid}/{courseId}/{cardId}/{fileId}/{fileName} {
+      allow read: if isMember();
+
+      // 새로 올리기만 된다. Storage의 create는 "파일 내용 쓰기" 전체라 덮어쓰기도 포함하므로,
+      // 이미 있는 파일이 없을 때(resource == null)만 허용한다.
+      allow create: if isMember()
+        && request.auth.uid == uid
+        && resource == null
+        && isSafeId(courseId)
+        && isSafeId(cardId)
+        && isSafeId(fileId)
+        && validNewFile(courseId, fileName);
+
+      allow update: if false;
+
+      allow delete: if isMember();
+    }
+
+    // 예전 위치 (2026-10-25 이전에 올린 첨부 파일): 열기·지우기만 된다. 새로 올리는 파일은 위의 materials/로 간다.
+    match /courses/{courseId}/cardFiles/{fileId}/{fileName} {
+      allow read: if isMember();
+      allow create, update: if false;
+      allow delete: if isMember();
+    }
+
+    // 그 밖의 모든 경로는 막는다 (규칙은 명시적으로 허용한 것만 통과한다)
+  }
+}

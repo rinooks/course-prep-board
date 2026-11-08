@@ -1,0 +1,20 @@
+{
+  "name": "lecture-prep-functions",
+  "private": true,
+  "description": "강의 준비 보드 서버 함수: 교안이 올라오면 카드를 리허설 단계로 옮기고 활동을 기록한다 (PRD F9)",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "firebase-functions": "^7.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
